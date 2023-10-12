@@ -1,7 +1,7 @@
 from sklearn.model_selection import train_test_split
 from FeatureExtraction import feature_extraction
 import copy
-def GPFE(data, test_split_portion: float, validation_split_portion, ML_model, GP_config: dict, unit: dict):
+def GPFE(data, test_split_portion: float,kfold,ML_model,GP_config: dict, unit: dict):
 
     data1=copy.deepcopy(data)
     train_unit = []
@@ -16,21 +16,27 @@ def GPFE(data, test_split_portion: float, validation_split_portion, ML_model, GP
 
 
     if test_split_portion:
-        train_1, test = train_test_split(data, stratify=data['Decision'], test_size=test_split_portion, random_state=2)
-
-        if validation_split_portion != 0:
-            train, validation = train_test_split(train_1, stratify=train_1['Decision'], test_size=validation_split_portion, random_state=2)
-            train, validation, test = train.to_dict(), validation.to_dict(), test.to_dict()
-
-        else:
-            train, validation, test = train_1.to_dict(),train_1.to_dict(), test.to_dict() # TODO validation_split_portion None이라면 validation -> training
+        train, test = train_test_split(data, stratify=data['Decision'], test_size=test_split_portion, random_state=2)
+        train,test=train.to_dict(),test.to_dict()
 
     else:
-        train, validation, test = data.to_dict(), data.to_dict(), data.to_dict()
-
+        train, test = train_test_split(data, stratify=data['Decision'], test_size=0.3, random_state=2)
+        train,test=train.to_dict(),test.to_dict()
 
 
 
     data = data.to_dict()
 
-    feature_extraction(GP_config, ML_model, attribute, attribute_name, train, validation, test, data, train_unit, validation_split_portion)
+    feature_extraction(GP_config, ML_model, attribute, attribute_name, train,test, data, train_unit,kfold)
+
+
+    # 여기서 train,test로만 나누고,,,, -> 그 다음에 feature extraction에서 fold로 나누기?
+
+    # k-fold 기능 추가안하면 그냥 train accuracy 구하는거,,, 만약 kfold 추가하면..?
+
+    # validation_split_portion None이라면 validation -> training
+    # fold로 분리 후 FE 적용 or FE 적용 후 fold 분리? -> 사실상 똑같음
+
+
+
+

@@ -1,8 +1,9 @@
 from sympy import sympify
 import copy
 import numpy as np
+from sklearn.model_selection import StratifiedKFold
 
-def feature_extraction(_GP_config, _ML_model, _attribute, _attribute_name, _train, _validation, _test, df, unit, _validation_split_portion):
+def feature_extraction(_GP_config, _ML_model, _attribute, _attribute_name, _train, _test, df, unit, _kfold):
     def check_combine(_chr):
         if _chr[2] == 'attr':
             check_attr1 = _attribute[_chr[0]]
@@ -70,24 +71,6 @@ def feature_extraction(_GP_config, _ML_model, _attribute, _attribute_name, _trai
 
         return str(check_attr1 + _chr[-1] + check_attr2)
 
-    def validation_calculate(_chr):
-        if _chr[2] != 'attr' and _chr[2] != 'min' and _chr[2] != 'max':
-            check_attr1 = '(validation_data["' + _chr[0] + '"][i]' + _chr[2] + 'validation_data["' + _chr[
-                1] + '"][i])'
-        elif _chr[2] == 'min' or _chr[2] == 'max':
-            check_attr1 = _chr[2] + '(validation_data["' + _chr[0] + '"][i], validation_data["' + _chr[1] + '"][i])'
-        else:
-            check_attr1 = '(validation_data["' + _chr[0] + '"][i])'
-
-        if _chr[5] != 'attr' and _chr[5] != 'min' and _chr[5] != 'max':
-            check_attr2 = '(validation_data["' + _chr[3] + '"][i]' + _chr[5] + 'validation_data["' + _chr[
-                4] + '"][i])'
-        elif _chr[2] == 'min' or _chr[2] == 'max':
-            check_attr2 = _chr[2] + '(validation_data["' + _chr[0] + '"][i], validation_data["' + _chr[1] + '"][i])'
-        else:
-            check_attr2 = '(validation_data["' + _chr[3] + '"][i])'
-
-        return str(check_attr1 + _chr[-1] + check_attr2)
 
     def calculate(_chr):
         if _chr[2] != 'attr' and _chr[2] != 'min' and _chr[2] != 'max':
@@ -182,20 +165,17 @@ def feature_extraction(_GP_config, _ML_model, _attribute, _attribute_name, _trai
             population_list.append(_chromosome_list)
         return population_list
 
-    def evaluate_fitness(_population_list, forest, validation_fitness, _attribute, _train, _validation, _test):
+    def evaluate_fitness(_population_list, forest, validation_fitness, _attribute, _train, _test):
         for _population in _population_list:
             train_data = copy.deepcopy(_train)
-            validation_data = copy.deepcopy(_validation)
             test_data = copy.deepcopy(_test)
             for _chromosome in _population:
                 extracted_feature = combine(_chromosome)
                 train_equation = train_calculate(_chromosome)
-                validation_equation = validation_calculate(_chromosome)
                 test_equation = test_calculate(_chromosome)
 
                 if not extracted_feature in train_data:
                     train_data[extracted_feature] = {}
-                    validation_data[extracted_feature] = {}
                     test_data[extracted_feature] = {}
 
                     for i in train_data['Decision'].keys():
@@ -206,14 +186,6 @@ def feature_extraction(_GP_config, _ML_model, _attribute, _attribute_name, _trai
                             train_equation = train_calculate(_chromosome)
                             train_data[extracted_feature].update({i: eval(train_equation)})
 
-                    for i in validation_data['Decision'].keys():
-                        try:
-                            validation_data[extracted_feature].update({i: eval(validation_equation)})
-                        except:
-                            np.place(_chromosome, _chromosome == '/', '*')
-                            validation_equation = validation_calculate(_chromosome)
-                            validation_data[extracted_feature].update({i: eval(validation_equation)})
-
                     for i in test_data['Decision'].keys():
                         try:
                             test_data[extracted_feature].update({i: eval(test_equation)})
@@ -223,41 +195,86 @@ def feature_extraction(_GP_config, _ML_model, _attribute, _attribute_name, _trai
                             test_data[extracted_feature].update({i: eval(test_equation)})
 
             train_chromosome = np.array(list(map(lambda x: list(train_data[x].values()), train_data)))
-            validation_chromosome = np.array(list(map(lambda x: list(validation_data[x].values()), validation_data)))
             test_chromosome = np.array(list(map(lambda x: list(test_data[x].values()), test_data)))
 
 
             if _ML_model['ML'] == 'regression':
-                regressor = _ML_model['model']
-                regressor.fit(
-                    np.concatenate((train_chromosome.T[:, :len(df)-1], train_chromosome.T[:, len(df):]), axis=1),
-                    train_chromosome.T[:, len(df)-1])
-                y_pred_test = regressor.predict(
-                    np.concatenate((test_chromosome.T[:, :len(df)-1], test_chromosome.T[:, len(df):]),
-                                   axis=1))
-                y_pred_validation = regressor.predict(
-                    np.concatenate((validation_chromosome.T[:, :len(df)-1], validation_chromosome.T[:, len(df):]),
-                                   axis=1))
-                validation_fitness.append([_population, _ML_model['regression_evaluate'](validation_chromosome.T[:, len(df)-1], y_pred_validation)])
-                forest.append([_population, _ML_model['regression_evaluate'](test_chromosome.T[:, len(df)-1], y_pred_test)])
+                if _kfold != None:
+                    X=np.concatenate((train_chromosome.T[:, :len(df)-1], train_chromosome.T[:, len(df):]), axis=1)
+                    y=train_chromosome.T[:, len(df)-1]
+                    kf = StratifiedKFold(n_splits=_kfold, random_state=42, shuffle=True)
+                    kfold_score = []
+                    for train_ind,test_ind in kf.split(X,y):
+                        X_train,X_test = X[train_ind], X[test_ind]
+                        y_train,y_test = y[train_ind], y[test_ind]
+                        regressor = _ML_model['model']
+                        regressor.fit(X_train,y_train)
+                        y_pred_validation = regressor.predict(X_test)
+                        kfold_score.append(_ML_model['regression_evaluate'](y_pred_validation,y_test))
+
+                    validation_score = sum(kfold_score)/len(kfold_score)
+
+                    regressor = _ML_model['model']
+                    regressor.fit(X,y)
+                    y_pred_test = regressor.predict(np.concatenate((train_chromosome.T[:, :len(df)-1], train_chromosome.T[:, len(df):]),axis=1))
+
+                    validation_fitness.append([_population,validation_score])
+                    forest.append([_population, _ML_model['regression_evaluate'](test_chromosome.T[:, len(df) - 1],y_pred_test)])
+
+
+                elif _kfold == None:
+                    regressor = _ML_model['model']
+                    regressor.fit(
+                        np.concatenate((train_chromosome.T[:, :len(df)-1], train_chromosome.T[:, len(df):]), axis=1),
+                        train_chromosome.T[:, len(df)-1])
+                    y_pred_train = regressor.predict(
+                        np.concatenate((train_chromosome.T[:, :len(df)-1], train_chromosome.T[:, len(df):]),
+                                       axis=1))
+                    y_pred_test = regressor.predict(
+                        np.concatenate((test_chromosome.T[:, :len(df)-1], test_chromosome.T[:, len(df):]),
+                                       axis=1))
+
+                    validation_fitness.append([_population, _ML_model['regressor_evaluate'](train_chromosome.T[:, len(df)-1], y_pred_train)])
+                    forest.append([_population, _ML_model['regressor_evaluate'](test_chromosome.T[:, len(df)-1], y_pred_test)])
 
 
             else:
-                classification = _ML_model['model']
-                a= train_chromosome.T[:, len(df)-1]
-                classification.fit(
-                    np.concatenate((train_chromosome.T[:, :len(df)-1], train_chromosome.T[:, len(df):]), axis=1),
-                    train_chromosome.T[:, len(df)-1])
-                y_pred_validation = classification.predict(
-                    np.concatenate((validation_chromosome.T[:, :len(df)-1], validation_chromosome.T[:, len(df):]),
-                                   axis=1))
-                y_pred_test = classification.predict(
-                    np.concatenate((test_chromosome.T[:, :len(df)-1], test_chromosome.T[:, len(df):]),
-                                   axis=1))
+                if _kfold != None:
+                    X=np.concatenate((train_chromosome.T[:, :len(df)-1], train_chromosome.T[:, len(df):]), axis=1)
+                    y=train_chromosome.T[:, len(df)-1]
+                    kf=StratifiedKFold(n_splits=_kfold,random_state=42,shuffle=True)
+                    kfold_score=[]
+                    for train_ind,test_ind in kf.split(X,y):
+                        X_train,X_test = X[train_ind], X[test_ind]
+                        y_train,y_test = y[train_ind], y[test_ind]
+                        classification = _ML_model['model']
+                        classification.fit(X_train,y_train)
+                        y_pred_validation = classification.predict(X_test)
+                        kfold_score.append(_ML_model['classification_evaluate'](y_pred_validation,y_test))
 
+                    validation_score=sum(kfold_score)/len(kfold_score)
 
-                validation_fitness.append([_population, _ML_model['classification_evaluate'](validation_chromosome.T[:, len(df)-1], y_pred_validation)])
-                forest.append([_population, _ML_model['classification_evaluate'](test_chromosome.T[:, len(df)-1], y_pred_test)])
+                    classification = _ML_model['model']
+                    classification.fit(X, y)
+                    y_pred_test = classification.predict(np.concatenate((test_chromosome.T[:, :len(df) - 1], test_chromosome.T[:, len(df):]),axis=1))
+
+                    validation_fitness.append([_population,validation_score])
+                    forest.append([_population, _ML_model['classification_evaluate'](test_chromosome.T[:, len(df) - 1],y_pred_test)])
+
+                elif _kfold == None:
+                    classification = _ML_model['model']
+                    classification.fit(
+                        np.concatenate((train_chromosome.T[:, :len(df)-1], train_chromosome.T[:, len(df):]), axis=1),
+                        train_chromosome.T[:, len(df)-1])
+                    y_pred_train = classification.predict(
+                        np.concatenate((train_chromosome.T[:, :len(df)-1], train_chromosome.T[:, len(df):]),
+                                       axis=1))
+                    y_pred_test = classification.predict(
+                        np.concatenate((test_chromosome.T[:, :len(df)-1], test_chromosome.T[:, len(df):]),
+                                       axis=1))
+
+                    validation_fitness.append([_population, _ML_model['classification_evaluate'](train_chromosome.T[:, len(df)-1], y_pred_train)])
+                    forest.append([_population, _ML_model['classification_evaluate'](test_chromosome.T[:, len(df)-1], y_pred_test)])
         return forest, validation_fitness
 
     def crossover_mutate(_population_list, _max_generation, forest, validation_fitness, _train, test_data, _attribute,
@@ -427,7 +444,7 @@ def feature_extraction(_GP_config, _ML_model, _attribute, _attribute_name, _trai
             new_forest = []
             new_validation_fitness = []
             forest, validation_fitness = evaluate_fitness(new_parent, new_forest, new_validation_fitness, _attribute,
-                                                          _train, _validation, test_data)
+                                                          _train, test_data)
             generation += 1
             if _ML_model['ML'] == 'regression':
                 best_tree, best_MSE = sorted(forest, key=lambda x: x[1], reverse=False)[0]
@@ -443,7 +460,7 @@ def feature_extraction(_GP_config, _ML_model, _attribute, _attribute_name, _trai
                 else:
                     best_parent_validation_MSE = best_validation_MSE
 
-                if _validation_split_portion ==None:
+                if _kfold==None:
                     print('Generation ' + str(generation) + ' Best Test ' + (_ML_model['regression_evaluate'].__name__) +': '+ str(best_MSE)
                           + ' Best Training ' + (_ML_model['regression_evaluate'].__name__) +': '+ str(best_validation_MSE))
                     print([combine(i) for i in best_tree])
@@ -468,7 +485,7 @@ def feature_extraction(_GP_config, _ML_model, _attribute, _attribute_name, _trai
                 else:
                     best_parent_validation_ACC = best_validation_ACC
 
-                if _validation_split_portion == None:
+                if _kfold == None:
                     print('Generation ' + str(generation) + ' Best Test ' + (_ML_model['classification_evaluate'].__name__) + ": " + str(best_acc) +
                           ' Best Training ' + (_ML_model['classification_evaluate'].__name__) + ': ' + str(best_validation_ACC))
                     print([combine(i) for i in best_tree])
@@ -481,12 +498,12 @@ def feature_extraction(_GP_config, _ML_model, _attribute, _attribute_name, _trai
     population_list, forest, validation_fitness = init_population(_GP_config['population_size'], _attribute, _attribute_name, _train, df,
                                                                   _GP_config['chromosome_size']), [], []
 
-    forest, validation_fitness = evaluate_fitness(population_list, forest, validation_fitness, _attribute, _train,
-                                                  _validation, _test)
+    forest, validation_fitness = evaluate_fitness(population_list, forest, validation_fitness, _attribute, _train, _test)
+
     if _ML_model['ML'] == 'regression' :
         best_tree, best_MSE = sorted(forest, key=lambda x: x[1], reverse=False)[0]
         best_validation_MSE_initial = sorted(validation_fitness, key=lambda x: x[1], reverse=False)[0][-1]
-        if _validation_split_portion == None:
+        if _kfold == None:
             print('Generation ' + str(1) + ' Best Test ' + (_ML_model['regression_evaluate'].__name__) + ': '+ str(best_MSE)
                   + ' Best Training ' + (_ML_model['regression_evaluate'].__name__) + ': '+ str(best_validation_MSE_initial))
             print([combine(i) for i in best_tree])
@@ -499,7 +516,7 @@ def feature_extraction(_GP_config, _ML_model, _attribute, _attribute_name, _trai
     else:
         best_tree, best_ACC = sorted(forest, key=lambda x: x[1], reverse=True)[0]
         best_validation_ACC = sorted(validation_fitness, key=lambda x: x[1], reverse=False)[0][-1]
-        if _validation_split_portion == None:
+        if _kfold == None:
             print('Generation ' + str(1) + ' Best Test ' + (_ML_model['classification_evaluate'].__name__) +': ' + str(best_ACC) +
                   ' Best Training ' + (_ML_model['classification_evaluate'].__name__) + ': ' + str(best_validation_ACC))
             print([combine(i) for i in best_tree])
@@ -507,6 +524,7 @@ def feature_extraction(_GP_config, _ML_model, _attribute, _attribute_name, _trai
             print('Generation ' + str(1) + ' Best Test '+ (_ML_model['classification_evaluate'].__name__) +': ' + str(best_ACC) +
                   ' Best Validation ' + (_ML_model['classification_evaluate'].__name__) +': '+ str(best_validation_ACC))
             print([combine(i) for i in best_tree])
+
 
     crossover_mutate(population_list, _GP_config['max_generation'], forest, validation_fitness, _train, _test, _attribute,
                      _attribute_name, _GP_config['chromosome_size'])
